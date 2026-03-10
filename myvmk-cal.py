@@ -109,27 +109,12 @@ def ics_escape(s: str) -> str:
     return s.replace("\\", "\\\\").replace(";", "\\;").replace(",", "\\,").replace("\n", "\\n")
 
 
-def ics_fold_line(line: str, max_len: int = 75) -> str:
-    """Fold a line according to ICS spec (max 75 octets, continuation lines start with space)."""
-    if len(line.encode('utf-8')) <= max_len:
-        return line
-
-    result = []
-    current = ""
-
-    for char in line:
-        test = current + char
-        if len(test.encode('utf-8')) > max_len:
-            result.append(current)
-            current = " " + char  # continuation line starts with space
-            max_len = 74  # subsequent lines have 74 chars (75 - 1 for leading space)
-        else:
-            current = test
-
-    if current:
-        result.append(current)
-
-    return "\n".join(result)
+def ics_truncate_description(desc: str, max_len: int = 60) -> str:
+    """Truncate description to avoid line folding issues with Google Calendar."""
+    available = max_len
+    if len(desc) <= available:
+        return desc
+    return desc[:available-3] + "..."
 
 
 def ics_dt(dt_obj: dt.datetime, tzid: Optional[str]) -> str:
@@ -163,12 +148,13 @@ def build_ics(events: List[dict], tzid: Optional[str], cal_name: str = "MyVMK Ev
             "BEGIN:VEVENT",
             f"DTSTAMP:{now}",
             f"UID:{uid}",
-            ics_fold_line(f"SUMMARY:{ics_escape(title)}"),
+            f"SUMMARY:{ics_escape(title)}",
             f"DTSTART{ics_dt(start, tzid)}",
             f"DTEND{ics_dt(end, tzid)}",
         ]
         if ev.get("description"):
-            lines.append(ics_fold_line(f"DESCRIPTION:{ics_escape(ev['description'])}"))
+            truncated_desc = ics_truncate_description(ics_escape(ev['description']))
+            lines.append(f"DESCRIPTION:{truncated_desc}")
         lines.append("END:VEVENT")
     lines.append("END:VCALENDAR")
     return "\n".join(lines) + "\n"
