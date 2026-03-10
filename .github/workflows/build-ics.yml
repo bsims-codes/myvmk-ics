@@ -30,15 +30,14 @@ jobs:
 
       - name: Build ICS
         run: |
+          mkdir -p docs
           python myvmk-cal.py \
-            --out myvmk.ics \
+            --out docs/myvmk.ics \
             --tz America/New_York \
             --verbose
 
       - name: Prepare docs for Pages
         run: |
-          mkdir -p docs
-          mv -f myvmk.ics docs/
           # prevent Jekyll processing
           touch docs/.nojekyll
           # tiny index so the site loads
