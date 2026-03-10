@@ -1,0 +1,2 @@
+# Keep ICS files with LF line endings (cross-platform compatible)
+*.ics text eol=lf

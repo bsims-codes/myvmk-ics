@@ -129,7 +129,7 @@ def ics_fold_line(line: str, max_len: int = 75) -> str:
     if current:
         result.append(current)
 
-    return "\r\n".join(result)
+    return "\n".join(result)
 
 
 def ics_dt(dt_obj: dt.datetime, tzid: Optional[str]) -> str:
@@ -171,8 +171,7 @@ def build_ics(events: List[dict], tzid: Optional[str], cal_name: str = "MyVMK Ev
             lines.append(ics_fold_line(f"DESCRIPTION:{ics_escape(ev['description'])}"))
         lines.append("END:VEVENT")
     lines.append("END:VCALENDAR")
-    # ICS spec requires CRLF line endings
-    return "\r\n".join(lines) + "\r\n"
+    return "\n".join(lines) + "\n"
 
 
 def make_event_key(event: Dict) -> str:
@@ -340,7 +339,7 @@ def main():
 
         # Build and write ICS
         ics_text = build_ics(events, args.tz)
-        with open(args.out, "w", encoding="utf-8", newline='') as f:
+        with open(args.out, "w", encoding="utf-8") as f:
             f.write(ics_text)
         print(f"Wrote {len(events)} events to {args.out}")
     except Exception as e:
