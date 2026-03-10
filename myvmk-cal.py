@@ -109,6 +109,29 @@ def ics_escape(s: str) -> str:
     return s.replace("\\", "\\\\").replace(";", "\\;").replace(",", "\\,").replace("\n", "\\n")
 
 
+def ics_fold_line(line: str, max_len: int = 75) -> str:
+    """Fold a line according to ICS spec (max 75 octets, continuation lines start with space)."""
+    if len(line.encode('utf-8')) <= max_len:
+        return line
+
+    result = []
+    current = ""
+
+    for char in line:
+        test = current + char
+        if len(test.encode('utf-8')) > max_len:
+            result.append(current)
+            current = " " + char  # continuation line starts with space
+            max_len = 74  # subsequent lines have 74 chars (75 - 1 for leading space)
+        else:
+            current = test
+
+    if current:
+        result.append(current)
+
+    return "\r\n".join(result)
+
+
 def ics_dt(dt_obj: dt.datetime, tzid: Optional[str]) -> str:
     """Format datetime for ICS."""
     stamp = dt_obj.strftime("%Y%m%dT%H%M%S")
@@ -140,15 +163,16 @@ def build_ics(events: List[dict], tzid: Optional[str], cal_name: str = "MyVMK Ev
             "BEGIN:VEVENT",
             f"DTSTAMP:{now}",
             f"UID:{uid}",
-            f"SUMMARY:{ics_escape(title)}",
+            ics_fold_line(f"SUMMARY:{ics_escape(title)}"),
             f"DTSTART{ics_dt(start, tzid)}",
             f"DTEND{ics_dt(end, tzid)}",
         ]
         if ev.get("description"):
-            lines.append(f"DESCRIPTION:{ics_escape(ev['description'])}")
+            lines.append(ics_fold_line(f"DESCRIPTION:{ics_escape(ev['description'])}"))
         lines.append("END:VEVENT")
     lines.append("END:VCALENDAR")
-    return "\n".join(lines) + "\n"
+    # ICS spec requires CRLF line endings
+    return "\r\n".join(lines) + "\r\n"
 
 
 def make_event_key(event: Dict) -> str:
@@ -316,7 +340,7 @@ def main():
 
         # Build and write ICS
         ics_text = build_ics(events, args.tz)
-        with open(args.out, "w", encoding="utf-8") as f:
+        with open(args.out, "w", encoding="utf-8", newline='') as f:
             f.write(ics_text)
         print(f"Wrote {len(events)} events to {args.out}")
     except Exception as e:
