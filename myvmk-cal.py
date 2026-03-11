@@ -139,6 +139,29 @@ def build_ics(events: List[dict], tzid: Optional[str], cal_name: str = "MyVMK Ev
         "CALSCALE:GREGORIAN",
         f"X-WR-CALNAME:{ics_escape(cal_name)}",
     ]
+
+    # Add VTIMEZONE component for America/New_York if using that timezone
+    if tzid == "America/New_York":
+        lines += [
+            "BEGIN:VTIMEZONE",
+            "TZID:America/New_York",
+            "X-LIC-LOCATION:America/New_York",
+            "BEGIN:DAYLIGHT",
+            "TZOFFSETFROM:-0500",
+            "TZOFFSETTO:-0400",
+            "TZNAME:EDT",
+            "DTSTART:19700308T020000",
+            "RRULE:FREQ=YEARLY;BYMONTH=3;BYDAY=2SU",
+            "END:DAYLIGHT",
+            "BEGIN:STANDARD",
+            "TZOFFSETFROM:-0400",
+            "TZOFFSETTO:-0500",
+            "TZNAME:EST",
+            "DTSTART:19701101T020000",
+            "RRULE:FREQ=YEARLY;BYMONTH=11;BYDAY=1SU",
+            "END:STANDARD",
+            "END:VTIMEZONE",
+        ]
     for ev in events:
         title = ev["title"] or "MyVMK Event"
         start = ev["start"]
@@ -302,7 +325,7 @@ def main():
     ap = argparse.ArgumentParser(description="Convert MyVMK events to .ics using the API")
     ap.add_argument("--out", default="myvmk.ics", help="Output .ics filename")
     ap.add_argument("--tz", default="America/New_York",
-                    help="TZID label for DTSTART/DTEND (no VTIMEZONE emitted)")
+                    help="TZID for DTSTART/DTEND (VTIMEZONE emitted for America/New_York)")
     ap.add_argument("--no-merge", action="store_true",
                     help="Don't merge with existing ICS file (fresh start)")
     ap.add_argument("--verbose", action="store_true")
