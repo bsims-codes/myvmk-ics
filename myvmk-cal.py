@@ -21,6 +21,7 @@ import os
 import re
 import sys
 from typing import Optional, List, Dict
+from zoneinfo import ZoneInfo
 
 try:
     import requests
@@ -271,28 +272,26 @@ def fetch_events(verbose: bool = False) -> List[Dict]:
                 continue
 
             # Convert Unix timestamps to datetime in Eastern time
-            start_utc = dt.datetime.fromtimestamp(start_ts, dt.timezone.utc)
-            end_utc = dt.datetime.fromtimestamp(end_ts, dt.timezone.utc)
+            # NOTE: The MyVMK API has a bug where timestamps are stored with the
+            # UTC offset ADDED instead of subtracted (i.e., Eastern times stored as UTC values).
+            # The timestamps are consistently 5 hours (EST offset) ahead of correct values.
+            # Fix: subtract 5 hours (18000 seconds) and interpret as local time.
 
-            # Determine if DST is in effect (rough check for US Eastern)
-            # DST starts 2nd Sunday of March, ends 1st Sunday of November
-            def is_dst(d):
-                # Simplified: DST roughly March 8 to Nov 1
-                if d.month > 3 and d.month < 11:
-                    return True
-                if d.month == 3 and d.day >= 8:
-                    return True
-                if d.month == 11 and d.day < 1:
-                    return True
-                return False
+            # Correct the API timestamps by subtracting 5 hours (the EST offset that was incorrectly added)
+            corrected_start_ts = start_ts - 18000  # 5 hours in seconds
+            corrected_end_ts = end_ts - 18000
 
-            # Eastern = UTC - 4 (EDT) or UTC - 5 (EST)
-            # Convert to naive datetime for calendar storage
-            offset_hours = 4 if is_dst(start_utc) else 5
-            start_dt = start_utc.replace(tzinfo=None) - dt.timedelta(hours=offset_hours)
+            # Convert to naive datetime - fromtimestamp without tz uses local time
+            # which gives us the correct Eastern time
+            start_dt = dt.datetime.fromtimestamp(corrected_start_ts)
+            end_dt = dt.datetime.fromtimestamp(corrected_end_ts)
 
-            offset_hours = 4 if is_dst(end_utc) else 5
-            end_dt = end_utc.replace(tzinfo=None) - dt.timedelta(hours=offset_hours)
+            # Validate: end time must be after start time
+            # If end is before start, assume 1-hour duration (API data error)
+            if end_dt <= start_dt:
+                if verbose:
+                    print(f"[warn] Fixing event '{name}' - invalid end time, assuming 1 hour duration")
+                end_dt = start_dt + dt.timedelta(hours=1)
 
             # Build description with host info
             full_desc = description
