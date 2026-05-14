@@ -94,9 +94,9 @@ def parse_existing_ics(filepath: str, verbose: bool = False) -> List[Dict]:
         if desc_match:
             event['description'] = desc_match.group(1).strip().replace('\\n', '\n').replace('\\,', ',').replace('\\;', ';')
 
-        # Only add if we have the essential fields
+        # Only add if we have the essential fields. We preserve the parsed UID
+        # so historical events keep the same identity across regenerations.
         if event.get('title') and event.get('start') and event.get('end'):
-            event['id'] = 0  # Historical events don't have API IDs
             events.append(event)
 
     if verbose:
@@ -138,7 +138,11 @@ def build_ics(events: List[dict], tzid: Optional[str], cal_name: str = "MyVMK Ev
         "VERSION:2.0",
         "PRODID:-//MyVMK Scraper//EN",
         "CALSCALE:GREGORIAN",
+        # METHOD:PUBLISH is required for Google Calendar's manual-import UI to
+        # accept the file; without it GCal reports "0 of 0 events imported".
+        "METHOD:PUBLISH",
         f"X-WR-CALNAME:{ics_escape(cal_name)}",
+        "X-WR-TIMEZONE:America/New_York",
     ]
 
     # Add VTIMEZONE component for America/New_York if using that timezone
@@ -167,7 +171,9 @@ def build_ics(events: List[dict], tzid: Optional[str], cal_name: str = "MyVMK Ev
         title = ev["title"] or "MyVMK Event"
         start = ev["start"]
         end = ev["end"]
-        uid = make_uid(title, start, end, ev.get("id", 0))
+        # Prefer the existing UID (from a prior ICS) so subscriber calendars
+        # don't see a delete+recreate when an event ages out of the API.
+        uid = ev.get("uid") or make_uid(title, start, end, ev.get("id", 0))
         lines += [
             "BEGIN:VEVENT",
             f"DTSTAMP:{now}",
@@ -181,7 +187,8 @@ def build_ics(events: List[dict], tzid: Optional[str], cal_name: str = "MyVMK Ev
             lines.append(f"DESCRIPTION:{truncated_desc}")
         lines.append("END:VEVENT")
     lines.append("END:VCALENDAR")
-    return "\n".join(lines) + "\n"
+    # RFC 5545 requires CRLF line endings; Google Calendar's importer rejects LF-only files.
+    return "\r\n".join(lines) + "\r\n"
 
 
 def make_event_key(event: Dict) -> str:
@@ -207,6 +214,15 @@ def merge_events(existing: List[Dict], new_events: List[Dict], verbose: bool = F
     for ev in new_events:
         key = make_event_key(ev)
         new_by_key[key] = ev
+
+    # Carry existing UIDs forward when the same event is also in the new set,
+    # so subscribers don't see a UID change on the first run after a fix.
+    existing_by_key = {make_event_key(ev): ev for ev in existing}
+    for key, new_ev in new_by_key.items():
+        if not new_ev.get("uid"):
+            prior = existing_by_key.get(key)
+            if prior and prior.get("uid"):
+                new_ev["uid"] = prior["uid"]
 
     # Start with new events
     merged = list(new_events)
@@ -248,74 +264,76 @@ def fetch_events(verbose: bool = False) -> List[Dict]:
         print(f"[debug] API response received, parsing events...")
 
     events: List[dict] = []
+    seen_ids = set()
 
-    # Parse current month events
-    current = data.get("current", {})
-    year = current.get("year", dt.date.today().year)
-    raw_events = current.get("events", [])
+    # Read all three buckets so events keep stable UIDs as the month rolls over.
+    # If we only read "current", an event drops off the API after its month and
+    # subsequent runs regenerate its UID from the existing ICS (with id=0),
+    # which makes subscribers see a ghost-delete + re-add.
+    for bucket_name in ("previous", "current", "next"):
+        bucket = data.get(bucket_name) or {}
+        raw_events = bucket.get("events", []) or []
+        year = bucket.get("year", dt.date.today().year)
 
-    if verbose:
-        print(f"[debug] Found {len(raw_events)} events for year {year}")
+        if verbose:
+            print(f"[debug] Bucket '{bucket_name}' (year {year}): {len(raw_events)} events")
 
-    for ev in raw_events:
-        try:
-            name = ev.get("name", "MyVMK Event").strip()
-            start_ts = ev.get("startTime")
-            end_ts = ev.get("endTime")
-            event_id = ev.get("id", 0)
-            host = ev.get("host", "")
-            description = ev.get("description", "")
+        for ev in raw_events:
+            try:
+                name = ev.get("name", "MyVMK Event").strip()
+                start_ts = ev.get("startTime")
+                end_ts = ev.get("endTime")
+                event_id = ev.get("id", 0)
+                host = ev.get("host", "")
+                description = ev.get("description", "")
 
-            if not start_ts or not end_ts:
+                if not start_ts or not end_ts:
+                    if verbose:
+                        print(f"[warn] Skipping event '{name}' - missing timestamps")
+                    continue
+
+                # Some events appear in both previous and current (or current and next)
+                # around month boundaries; dedupe by API id.
+                if event_id and event_id in seen_ids:
+                    continue
+                if event_id:
+                    seen_ids.add(event_id)
+
+                # Correct the API timestamp bug: timestamps come back 5 hours ahead.
+                # Subtract 5h, then interpret as local time on a TZ=America/New_York host.
+                corrected_start_ts = start_ts - 18000
+                corrected_end_ts = end_ts - 18000
+
+                start_dt = dt.datetime.fromtimestamp(corrected_start_ts)
+                end_dt = dt.datetime.fromtimestamp(corrected_end_ts)
+
+                if end_dt <= start_dt:
+                    if verbose:
+                        print(f"[warn] Fixing event '{name}' - invalid end time, assuming 1 hour duration")
+                    end_dt = start_dt + dt.timedelta(hours=1)
+
+                full_desc = description
+                if host:
+                    full_desc = f"Host: {host}\n{description}" if description else f"Host: {host}"
+
+                events.append({
+                    "title": name,
+                    "start": start_dt,
+                    "end": end_dt,
+                    "id": event_id,
+                    "description": full_desc,
+                })
+
                 if verbose:
-                    print(f"[warn] Skipping event '{name}' - missing timestamps")
+                    print(f"[debug] Parsed: {name} @ {start_dt.strftime('%Y-%m-%d %H:%M')}")
+
+            except Exception as e:
+                if verbose:
+                    print(f"[warn] Failed to parse event: {e}")
                 continue
 
-            # Convert Unix timestamps to datetime in Eastern time
-            # NOTE: The MyVMK API has a bug where timestamps are stored with the
-            # UTC offset ADDED instead of subtracted (i.e., Eastern times stored as UTC values).
-            # The timestamps are consistently 5 hours (EST offset) ahead of correct values.
-            # Fix: subtract 5 hours (18000 seconds) and interpret as local time.
-
-            # Correct the API timestamps by subtracting 5 hours (the EST offset that was incorrectly added)
-            corrected_start_ts = start_ts - 18000  # 5 hours in seconds
-            corrected_end_ts = end_ts - 18000
-
-            # Convert to naive datetime - fromtimestamp without tz uses local time
-            # which gives us the correct Eastern time
-            start_dt = dt.datetime.fromtimestamp(corrected_start_ts)
-            end_dt = dt.datetime.fromtimestamp(corrected_end_ts)
-
-            # Validate: end time must be after start time
-            # If end is before start, assume 1-hour duration (API data error)
-            if end_dt <= start_dt:
-                if verbose:
-                    print(f"[warn] Fixing event '{name}' - invalid end time, assuming 1 hour duration")
-                end_dt = start_dt + dt.timedelta(hours=1)
-
-            # Build description with host info
-            full_desc = description
-            if host:
-                full_desc = f"Host: {host}\n{description}" if description else f"Host: {host}"
-
-            events.append({
-                "title": name,
-                "start": start_dt,
-                "end": end_dt,
-                "id": event_id,
-                "description": full_desc,
-            })
-
-            if verbose:
-                print(f"[debug] Parsed: {name} @ {start_dt.strftime('%Y-%m-%d %H:%M')}")
-
-        except Exception as e:
-            if verbose:
-                print(f"[warn] Failed to parse event: {e}")
-            continue
-
     if verbose:
-        print(f"[info] Parsed {len(events)} events total")
+        print(f"[info] Parsed {len(events)} events total from API")
 
     return events
 
@@ -347,7 +365,7 @@ def main():
 
         # Build and write ICS
         ics_text = build_ics(events, args.tz)
-        with open(args.out, "w", encoding="utf-8") as f:
+        with open(args.out, "w", encoding="utf-8", newline="") as f:
             f.write(ics_text)
         print(f"Wrote {len(events)} events to {args.out}")
     except Exception as e:
