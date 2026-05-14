@@ -107,6 +107,11 @@ def parse_existing_ics(filepath: str, verbose: bool = False) -> List[Dict]:
 
 def ics_escape(s: str) -> str:
     """Escape special characters for ICS format."""
+    # Normalize CRLF/CR to LF before escaping. The MyVMK API returns descriptions
+    # with raw CRLF newlines; without this, the bare CR survives into the
+    # DESCRIPTION line, which RFC 5545 disallows and which Apple Calendar's
+    # strict parser treats as a premature line break — corrupting the VEVENT.
+    s = s.replace("\r\n", "\n").replace("\r", "\n")
     return s.replace("\\", "\\\\").replace(";", "\\;").replace(",", "\\,").replace("\n", "\\n")
 
 
